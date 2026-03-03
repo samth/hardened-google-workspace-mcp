@@ -1054,6 +1054,87 @@ async def discard_draft(
 
 
 @server.tool()
+@handle_http_errors("update_gmail_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def update_gmail_draft(
+    service,
+    user_google_email: str,
+    draft_id: str = Body(..., description="The ID of the draft to update."),
+    subject: str = Body(..., description="Email subject."),
+    body: str = Body(..., description="Email body (plain text)."),
+    body_format: Literal["plain", "html"] = Body(
+        "plain",
+        description="Email body format. Use 'plain' for plaintext or 'html' for HTML content.",
+    ),
+    to: Optional[str] = Body(None, description="Optional recipient email address."),
+    cc: Optional[str] = Body(None, description="Optional CC email address."),
+    bcc: Optional[str] = Body(None, description="Optional BCC email address."),
+    thread_id: Optional[str] = Body(
+        None, description="Optional Gmail thread ID to reply within."
+    ),
+    in_reply_to: Optional[str] = Body(
+        None, description="Optional Message-ID of the message being replied to."
+    ),
+    references: Optional[str] = Body(
+        None, description="Optional chain of Message-IDs for proper threading."
+    ),
+    from_email: Optional[str] = Body(
+        None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
+    ),
+) -> str:
+    """
+    Updates an existing draft in the user's Gmail account, replacing its content.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        draft_id (str): The ID of the draft to update.
+        subject (str): Email subject.
+        body (str): Email body.
+        body_format (Literal['plain', 'html']): Email body format. Defaults to 'plain'.
+        to (Optional[str]): Optional recipient email address.
+        cc (Optional[str]): Optional CC email address.
+        bcc (Optional[str]): Optional BCC email address.
+        thread_id (Optional[str]): Optional Gmail thread ID to reply within.
+        in_reply_to (Optional[str]): Optional Message-ID for threading.
+        references (Optional[str]): Optional chain of Message-IDs for threading.
+        from_email (Optional[str]): Optional sender address override.
+
+    Returns:
+        str: Confirmation message with the updated draft's ID.
+    """
+    logger.info(
+        f"[update_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}', Subject: '{subject}'"
+    )
+
+    raw_message, thread_id_final = _prepare_gmail_message(
+        subject=subject,
+        body=body,
+        body_format=body_format,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        from_email=from_email or user_google_email,
+    )
+
+    draft_body = {"message": {"raw": raw_message}}
+
+    if thread_id_final:
+        draft_body["message"]["threadId"] = thread_id_final
+
+    updated_draft = await asyncio.to_thread(
+        service.users()
+        .drafts()
+        .update(userId="me", id=draft_id, body=draft_body)
+        .execute
+    )
+    updated_id = updated_draft.get("id")
+    return f"Draft updated! Draft ID: {updated_id}"
+
+
+@server.tool()
 @handle_http_errors("list_gmail_drafts", service_type="gmail")
 @require_google_service("gmail", GMAIL_READONLY_SCOPE)
 async def list_gmail_drafts(
