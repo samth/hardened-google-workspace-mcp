@@ -29,8 +29,6 @@ Keep these values handy for Step 4.
 
 ## Step 2: Install Python (if you don't have it)
 
-Open **Terminal** (press `Cmd + Space`, type "Terminal", hit Enter).
-
 Check if Python is installed:
 ```bash
 python3 --version
@@ -39,12 +37,19 @@ python3 --version
 If you see a version number (like `Python 3.11.4`), skip to Step 3.
 
 If you get "command not found", install Python:
+
+**macOS:**
 ```bash
 # Install Homebrew first (if you don't have it)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Then install Python
 brew install python
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt install python3 python3-venv
 ```
 
 ---
@@ -56,7 +61,18 @@ In Terminal, run:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then close and reopen Terminal (or run `source ~/.zshrc`).
+Then close and reopen your terminal (or run `source ~/.zshrc` / `source ~/.bashrc`).
+
+**Linux only:** Ensure a Secret Service provider is installed for secure credential storage:
+```bash
+# GNOME-based desktops (Ubuntu, Fedora GNOME, etc.)
+sudo apt install gnome-keyring   # Debian/Ubuntu
+sudo dnf install gnome-keyring   # Fedora
+
+# KDE-based desktops
+sudo apt install kwalletmanager  # Debian/Ubuntu
+sudo dnf install kwalletmanager  # Fedora
+```
 
 ---
 
@@ -110,17 +126,20 @@ mkdir -p ~/.claude
 
 **5b.** Create the config file:
 ```bash
+# macOS
 open -e ~/.claude/mcp_config.json
+# Linux
+${EDITOR:-nano} ~/.claude/mcp_config.json
 ```
 
-**5c.** Paste this content (replace `YOUR_USERNAME` with your macOS username - run `whoami` in Terminal to find it):
+**5c.** Paste this content (replace the directory path with the actual location of `hardened-google-workspace-mcp`):
 
 ```json
 {
   "mcpServers": {
     "hardened-workspace": {
       "command": "uv",
-      "args": ["run", "--directory", "/Users/YOUR_USERNAME/hardened-google-workspace-mcp", "python", "-m", "main", "--single-user"],
+      "args": ["run", "--directory", "/path/to/hardened-google-workspace-mcp", "python", "-m", "main", "--single-user"],
       "env": {
         "GOOGLE_OAUTH_CLIENT_ID": "YOUR_CLIENT_ID",
         "GOOGLE_OAUTH_CLIENT_SECRET": "YOUR_CLIENT_SECRET"
@@ -130,9 +149,9 @@ open -e ~/.claude/mcp_config.json
 }
 ```
 
-Replace `YOUR_CLIENT_ID` and `YOUR_CLIENT_SECRET` with the values from Step 1.
+Replace `YOUR_CLIENT_ID` and `YOUR_CLIENT_SECRET` with the values from Step 1, and update the directory path (e.g., `/Users/you/hardened-google-workspace-mcp` on macOS or `/home/you/hardened-google-workspace-mcp` on Linux).
 
-**5d.** Save and close the file (`Cmd + S`, then `Cmd + W`).
+**5d.** Save and close the file.
 
 ---
 

@@ -377,9 +377,8 @@ async def start_auth_flow(
         message_lines = [
             f"**ACTION REQUIRED: Google Authentication Needed for {user_display_name}**\n",
             f"To proceed, the user must authorize this application for {service_name} access using all required permissions.",
-            "**LLM, please present this exact authorization URL to the user as a clickable hyperlink:**",
-            f"Authorization URL: {auth_url}",
-            f"Markdown for hyperlink: [Click here to authorize {service_name} access]({auth_url})\n",
+            "**LLM, please present this exact authorization URL to the user. Output it as a raw URL on its own line with no markdown formatting, no line breaks inserted, and no characters added or removed:**",
+            f"{auth_url}",
             "**LLM, after presenting the link, instruct the user as follows:**",
             "1. Click the link and complete the authorization in their browser.",
         ]
@@ -723,7 +722,7 @@ def get_credentials(
                     issuer="https://accounts.google.com",  # Add issuer for Google tokens
                 )
 
-            if session_id:  # Update session cache if it was the source or is active
+            if session_id and not user_google_email:  # Only needed when email is unknown; when email is known, store_session above already handled this
                 save_credentials_to_session(session_id, credentials)
             return credentials
         except RefreshError as e:

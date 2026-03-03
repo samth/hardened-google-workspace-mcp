@@ -24,6 +24,7 @@ from auth.scopes import (
     GMAIL_COMPOSE_SCOPE,
     GMAIL_MODIFY_SCOPE,
     GMAIL_LABELS_SCOPE,
+    GMAIL_READONLY_SCOPE,
 )
 
 logger = logging.getLogger(__name__)
@@ -922,6 +923,9 @@ async def draft_gmail_message(
     references: Optional[str] = Body(
         None, description="Optional chain of Message-IDs for proper threading."
     ),
+    from_email: Optional[str] = Body(
+        None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
+    ),
 ) -> str:
     """
     Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts.
@@ -937,6 +941,7 @@ async def draft_gmail_message(
         thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, creates a reply draft.
         in_reply_to (Optional[str]): Optional Message-ID of the message being replied to. Used for proper threading.
         references (Optional[str]): Optional chain of Message-IDs for proper threading. Should include all previous Message-IDs.
+        from_email (Optional[str]): Optional sender address override (e.g. a send-as alias). Defaults to user_google_email.
 
     Returns:
         str: Confirmation message with the created draft's ID.
@@ -1000,7 +1005,7 @@ async def draft_gmail_message(
         thread_id=thread_id,
         in_reply_to=in_reply_to,
         references=references,
-        from_email=user_google_email,
+        from_email=from_email or user_google_email,
     )
 
     # Create a draft instead of sending
@@ -1016,6 +1021,124 @@ async def draft_gmail_message(
     )
     draft_id = created_draft.get("id")
     return f"Draft created! Draft ID: {draft_id}"
+
+
+@server.tool()
+@handle_http_errors("discard_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def discard_draft(
+    service,
+    user_google_email: str,
+    draft_id: str,
+) -> str:
+    """
+    Permanently discards (deletes) a Gmail draft. This is irreversible and does not move
+    the draft to trash -- it is immediately and permanently removed.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        draft_id (str): The ID of the draft to discard (as returned by draft_gmail_message).
+
+    Returns:
+        str: Confirmation that the draft was discarded.
+    """
+    logger.info(
+        f"[discard_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
+    )
+
+    await asyncio.to_thread(
+        service.users().drafts().delete(userId="me", id=draft_id).execute
+    )
+
+    return f"Draft {draft_id} discarded successfully."
+
+
+@server.tool()
+@handle_http_errors("list_gmail_drafts", service_type="gmail")
+@require_google_service("gmail", GMAIL_READONLY_SCOPE)
+async def list_gmail_drafts(
+    service,
+    user_google_email: str,
+) -> str:
+    """
+    Lists all drafts in the user's Gmail account, returning draft IDs and message metadata.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+
+    Returns:
+        str: A formatted list of drafts with their draft IDs, message IDs, subjects, and recipients.
+    """
+    logger.info(
+        f"[list_gmail_drafts] Invoked. Email: '{user_google_email}'"
+    )
+
+    drafts = []
+    page_token = None
+
+    while True:
+        kwargs = {"userId": "me", "maxResults": 100}
+        if page_token:
+            kwargs["pageToken"] = page_token
+
+        response = await asyncio.to_thread(
+            service.users().drafts().list(**kwargs).execute
+        )
+
+        batch = response.get("drafts", [])
+        drafts.extend(batch)
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    if not drafts:
+        return "No drafts found."
+
+    result_lines = [f"Found {len(drafts)} draft(s):\n"]
+
+    # Fetch metadata for each draft's message
+    for draft in drafts:
+        draft_id = draft.get("id", "")
+        message = draft.get("message", {})
+        message_id = message.get("id", "")
+        thread_id = message.get("threadId", "")
+
+        # Get message metadata
+        try:
+            msg_data = await asyncio.to_thread(
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=message_id,
+                    format="metadata",
+                    metadataHeaders=GMAIL_METADATA_HEADERS,
+                )
+                .execute
+            )
+            headers = {
+                h["name"]: h["value"]
+                for h in msg_data.get("payload", {}).get("headers", [])
+            }
+            subject = headers.get("Subject", "(no subject)")
+            to = headers.get("To", "(no recipient)")
+            date = headers.get("Date", "")
+        except Exception:
+            subject = "(unable to fetch)"
+            to = ""
+            date = ""
+
+        result_lines.append(f"  Draft ID: {draft_id}")
+        result_lines.append(f"  Message ID: {message_id}")
+        result_lines.append(f"  Thread ID: {thread_id}")
+        result_lines.append(f"  Subject: {subject}")
+        result_lines.append(f"  To: {to}")
+        if date:
+            result_lines.append(f"  Date: {date}")
+        result_lines.append("")
+
+    return "\n".join(result_lines)
 
 
 def _format_thread_content(thread_data: dict, thread_id: str) -> str:
