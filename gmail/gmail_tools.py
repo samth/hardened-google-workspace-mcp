@@ -4,17 +4,40 @@ Google Gmail MCP Tools
 This module provides MCP tools for interacting with the Gmail API.
 """
 
+import json
 import logging
 import asyncio
 import base64
 import ssl
 from html.parser import HTMLParser
-from typing import Optional, List, Dict, Literal, Any
+from typing import Annotated, Optional, List, Dict, Literal, Any
 
 from email.mime.text import MIMEText
 
 from fastapi import Body
-from pydantic import Field
+from pydantic import BeforeValidator, Field
+
+
+def _parse_str_list(v: Any) -> Any:
+    """Parse a JSON-encoded list string into a Python list.
+
+    MCP clients may send List[str] parameters as JSON strings rather than
+    native arrays.  This validator accepts both forms so that Pydantic
+    validation succeeds either way.
+    """
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fall back to comma-separated
+        return [s.strip() for s in v.split(",") if s.strip()]
+    return v
+
+
+StrList = Annotated[List[str], BeforeValidator(_parse_str_list)]
 
 from auth.service_decorator import require_google_service
 from core.utils import handle_http_errors
@@ -38,24 +61,59 @@ GMAIL_METADATA_HEADERS = ["Subject", "From", "To", "Cc", "Message-ID", "Date"]
 class _HTMLTextExtractor(HTMLParser):
     """Extract readable text from HTML using stdlib."""
 
+    _BLOCK_TAGS = frozenset({
+        "p", "div", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "li", "ul", "ol", "blockquote", "pre", "table", "tr", "td", "th",
+        "section", "article", "header", "footer", "nav",
+    })
+
     def __init__(self):
         super().__init__()
         self._text = []
         self._skip = False
 
     def handle_starttag(self, tag, attrs):
-        self._skip = tag in ("script", "style")
+        if tag in ("script", "style"):
+            self._skip = True
+        elif tag in self._BLOCK_TAGS:
+            self._text.append("\n")
+        elif tag == "br":
+            self._text.append("\n")
+        elif tag in ("a", "td", "th", "img", "input", "button"):
+            # Tags that typically create word boundaries -- add space
+            if self._text and self._text[-1] and not self._text[-1][-1:].isspace():
+                self._text.append(" ")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style"):
             self._skip = False
+        elif tag in self._BLOCK_TAGS:
+            self._text.append("\n")
 
     def handle_data(self, data):
         if not self._skip:
             self._text.append(data)
 
     def get_text(self) -> str:
-        return " ".join("".join(self._text).split())
+        # Join fragments, collapse runs of whitespace within lines,
+        # collapse runs of blank lines to at most 2
+        import re
+        raw = "".join(self._text)
+        # Normalize spaces within lines (but preserve newlines)
+        lines = raw.split("\n")
+        cleaned = [" ".join(line.split()) for line in lines]
+        # Collapse runs of blank lines
+        result = []
+        blank_count = 0
+        for line in cleaned:
+            if line.strip() == "":
+                blank_count += 1
+                if blank_count <= 2:
+                    result.append("")
+            else:
+                blank_count = 0
+                result.append(line)
+        return "\n".join(result).strip()
 
 
 def _html_to_text(html: str) -> str:
@@ -151,11 +209,13 @@ def _format_body_content(text_body: str, html_body: str) -> str:
     text_stripped = text_body.strip()
     html_stripped = html_body.strip()
 
-    # Detect useless fallback: HTML comments in text, or HTML is 50x+ longer
+    # Prefer HTML when available -- plain text from senders often has
+    # missing spaces from HTML tag boundaries (e.g., "which<em>no</em>" -> "whichno")
     use_html = html_stripped and (
         not text_stripped
         or "<!--" in text_stripped
         or len(html_stripped) > len(text_stripped) * 50
+        or len(html_stripped) > 100  # HTML available and non-trivial
     )
 
     if use_html:
@@ -553,7 +613,7 @@ async def get_gmail_message_content(
 @require_google_service("gmail", "gmail_read")
 async def get_gmail_messages_content_batch(
     service,
-    message_ids: List[str],
+    message_ids: StrList,
     user_google_email: str,
     format: Literal["full", "metadata"] = "full",
 ) -> str:
@@ -1332,7 +1392,7 @@ async def get_gmail_thread_content(
 )
 async def get_gmail_threads_content_batch(
     service,
-    thread_ids: List[str],
+    thread_ids: StrList,
     user_google_email: str,
 ) -> str:
     """
@@ -1654,10 +1714,10 @@ async def modify_gmail_message_labels(
     service,
     user_google_email: str,
     message_id: str,
-    add_label_ids: List[str] = Field(
+    add_label_ids: StrList = Field(
         default=[], description="Label IDs to add to the message."
     ),
-    remove_label_ids: List[str] = Field(
+    remove_label_ids: StrList = Field(
         default=[], description="Label IDs to remove from the message."
     ),
 ) -> str:
@@ -1718,11 +1778,11 @@ async def modify_gmail_message_labels(
 async def batch_modify_gmail_message_labels(
     service,
     user_google_email: str,
-    message_ids: List[str],
-    add_label_ids: List[str] = Field(
+    message_ids: StrList,
+    add_label_ids: StrList = Field(
         default=[], description="Label IDs to add to messages."
     ),
-    remove_label_ids: List[str] = Field(
+    remove_label_ids: StrList = Field(
         default=[], description="Label IDs to remove from messages."
     ),
 ) -> str:
