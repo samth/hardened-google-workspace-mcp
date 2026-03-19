@@ -579,16 +579,21 @@ def get_credentials(
                                 user_email=user_email,
                                 access_token=credentials.token,
                                 refresh_token=credentials.refresh_token,
+                                token_uri=credentials.token_uri,
+                                client_id=credentials.client_id,
+                                client_secret=credentials.client_secret,
                                 scopes=credentials.scopes,
                                 expiry=credentials.expiry,
                                 mcp_session_id=session_id,
+                                issuer="https://accounts.google.com",
                             )
                         return credentials
                     except Exception as e:
                         logger.error(
                             f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}"
                         )
-                        return None
+                        # Fall through to try persistent credential store
+                        pass
         except ImportError:
             pass  # OAuth 2.1 store not available
         except Exception as e:
