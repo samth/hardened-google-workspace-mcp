@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 GMAIL_BATCH_SIZE = 25
 GMAIL_REQUEST_DELAY = 0.1
-HTML_BODY_TRUNCATE_LIMIT = 20000
+HTML_BODY_TRUNCATE_LIMIT = 50000
 GMAIL_METADATA_HEADERS = ["Subject", "From", "To", "Cc", "Message-ID", "Date"]
 
 
@@ -69,50 +69,85 @@ class _HTMLTextExtractor(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self._text = []
+        self._text = []  # list of (string, blockquote_depth) tuples
         self._skip = False
+        self._link_href = None
+        self._bq_depth = 0
+
+    _HEADING_TAGS = {"h1": "# ", "h2": "## ", "h3": "### ",
+                     "h4": "#### ", "h5": "##### ", "h6": "###### "}
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
             self._skip = True
+        elif tag in self._HEADING_TAGS:
+            self._text.append(("\n", self._bq_depth))
+            self._text.append((self._HEADING_TAGS[tag], self._bq_depth))
+        elif tag == "blockquote":
+            self._bq_depth += 1
+            self._text.append(("\n", self._bq_depth))
         elif tag in self._BLOCK_TAGS:
-            self._text.append("\n")
+            self._text.append(("\n", self._bq_depth))
         elif tag == "br":
-            self._text.append("\n")
-        elif tag in ("a", "td", "th", "img", "input", "button"):
-            # Tags that typically create word boundaries -- add space
-            if self._text and self._text[-1] and not self._text[-1][-1:].isspace():
-                self._text.append(" ")
+            self._text.append(("\n", self._bq_depth))
+        elif tag == "a":
+            href = dict(attrs).get("href", "")
+            self._link_href = href if href else None
+            if self._text and self._text[-1][0] and not self._text[-1][0][-1:].isspace():
+                self._text.append((" ", self._bq_depth))
+        elif tag in ("td", "th", "img", "input", "button"):
+            if self._text and self._text[-1][0] and not self._text[-1][0][-1:].isspace():
+                self._text.append((" ", self._bq_depth))
 
     def handle_endtag(self, tag):
         if tag in ("script", "style"):
             self._skip = False
+        elif tag == "a" and self._link_href:
+            self._text.append((f" <{self._link_href}>", self._bq_depth))
+            self._link_href = None
+        elif tag == "blockquote":
+            self._bq_depth = max(0, self._bq_depth - 1)
+            self._text.append(("\n", self._bq_depth))
         elif tag in self._BLOCK_TAGS:
-            self._text.append("\n")
+            self._text.append(("\n", self._bq_depth))
 
     def handle_data(self, data):
         if not self._skip:
-            self._text.append(data)
+            self._text.append((data, self._bq_depth))
 
     def get_text(self) -> str:
-        # Join fragments, collapse runs of whitespace within lines,
-        # collapse runs of blank lines to at most 2
-        import re
-        raw = "".join(self._text)
-        # Normalize spaces within lines (but preserve newlines)
-        lines = raw.split("\n")
-        cleaned = [" ".join(line.split()) for line in lines]
-        # Collapse runs of blank lines
+        # Process fragments into lines, applying blockquote prefixes
+        lines_with_depth = []
+        current_line = []
+        current_depth = 0
+        for text, depth in self._text:
+            current_depth = depth
+            parts = text.split("\n")
+            for i, part in enumerate(parts):
+                if i > 0:
+                    # Newline boundary: flush accumulated line
+                    lines_with_depth.append(
+                        (" ".join("".join(current_line).split()), current_depth)
+                    )
+                    current_line = []
+                current_line.append(part)
+        if current_line:
+            lines_with_depth.append(
+                (" ".join("".join(current_line).split()), current_depth)
+            )
+
+        # Build output with > prefixes and collapse blank lines
         result = []
         blank_count = 0
-        for line in cleaned:
-            if line.strip() == "":
+        for line_text, depth in lines_with_depth:
+            if line_text.strip() == "":
                 blank_count += 1
                 if blank_count <= 2:
                     result.append("")
             else:
                 blank_count = 0
-                result.append(line)
+                prefix = "> " * depth
+                result.append(prefix + line_text)
         return "\n".join(result).strip()
 
 
@@ -220,8 +255,6 @@ def _format_body_content(text_body: str, html_body: str) -> str:
 
     if use_html:
         content = _html_to_text(html_stripped)
-        if len(content) > HTML_BODY_TRUNCATE_LIMIT:
-            content = content[:HTML_BODY_TRUNCATE_LIMIT] + "\n\n[Content truncated...]"
         return content
     elif text_stripped:
         return text_body
@@ -627,7 +660,8 @@ async def get_gmail_messages_content_batch(
         format (Literal["full", "metadata"]): Message format. "full" includes body, "metadata" only headers.
 
     Returns:
-        str: A formatted list of message contents including subject, sender, date, Message-ID, recipients (To, Cc), and body (if full format).
+        str: A formatted list of message contents. Metadata format includes: subject, sender, date, Message-ID,
+        Thread-ID, Labels, In-Inbox (yes/no), Snippet, and recipients (To, Cc). Full format additionally includes body.
     """
     logger.info(
         f"[get_gmail_messages_content_batch] Invoked. Message count: {len(message_ids)}, Email: '{user_google_email}'"
@@ -749,6 +783,10 @@ async def get_gmail_messages_content_batch(
                     to = headers.get("To", "")
                     cc = headers.get("Cc", "")
                     rfc822_msg_id = headers.get("Message-ID", "")
+                    # Top-level fields (not in payload headers)
+                    thread_id = message.get("threadId", "")
+                    snippet = message.get("snippet", "")
+                    label_ids = message.get("labelIds", [])
 
                     msg_output = (
                         f"Message ID: {mid}\nSubject: {subject}\nFrom: {sender}\n"
@@ -756,7 +794,13 @@ async def get_gmail_messages_content_batch(
                     )
                     if rfc822_msg_id:
                         msg_output += f"Message-ID: {rfc822_msg_id}\n"
-
+                    if thread_id:
+                        msg_output += f"Thread-ID: {thread_id}\n"
+                    if label_ids:
+                        msg_output += f"Labels: {', '.join(label_ids)}\n"
+                        msg_output += f"In-Inbox: {'yes' if 'INBOX' in label_ids else 'no'}\n"
+                    if snippet:
+                        msg_output += f"Snippet: {snippet}\n"
                     if to:
                         msg_output += f"To: {to}\n"
                     if cc:
