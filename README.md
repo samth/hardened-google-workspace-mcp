@@ -52,10 +52,11 @@ See [SECURITY.md](./SECURITY.md) for the complete security model and additional 
 
 Follow **[OAUTH_SETUP.md](./OAUTH_SETUP.md)** to create Google Cloud OAuth credentials.
 
-### Step 2: Install Dependencies
+### Step 2: Clone and Install
 
 ```bash
-cd ~/hardened-google-workspace-mcp  # or wherever you placed it
+git clone https://github.com/c0webster/hardened-google-workspace-mcp.git ~/hardened-google-workspace-mcp
+cd ~/hardened-google-workspace-mcp
 uv sync
 ```
 

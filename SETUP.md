@@ -78,11 +78,9 @@ sudo dnf install kwalletmanager  # Fedora
 
 ## Step 4: Set Up the Workspace Server
 
-**4a.** Move the `hardened-google-workspace-mcp` folder somewhere permanent.
-
-We recommend putting it in your home folder:
+**4a.** Clone the repository to your home folder:
 ```bash
-mv ~/Downloads/hardened-google-workspace-mcp ~/hardened-google-workspace-mcp
+git clone https://github.com/c0webster/hardened-google-workspace-mcp.git ~/hardened-google-workspace-mcp
 ```
 
 **4b.** Install the dependencies:
@@ -201,6 +199,17 @@ Try asking Claude:
 - "Show me my recent emails"
 - "What's on my calendar this week?"
 - "Find the document called [something] in my Drive"
+
+---
+
+## Updating
+
+To get the latest version, run:
+```bash
+cd ~/hardened-google-workspace-mcp && git pull && uv sync
+```
+
+Then restart Claude Code (`Cmd + Q` and reopen).
 
 ---
 
