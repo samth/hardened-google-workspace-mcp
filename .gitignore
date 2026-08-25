@@ -29,3 +29,9 @@ mcp_server_debug.log
 # ---- Local development files -------------------------------------------
 /.credentials
 /.claude
+
+# ===- Runtime scratch ===================================================
+# Attachments fetched by get_gmail_attachment_content land here.
+/tmp/
+# Local mail mirror used by the gmail-tui client.
+gmail-tui.db
