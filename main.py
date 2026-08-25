@@ -181,6 +181,7 @@ def main():
         "sheets": lambda: import_module("gsheets.sheets_tools"),
         "forms": lambda: import_module("gforms.forms_tools"),
         "slides": lambda: import_module("gslides.slides_tools"),
+        "contacts": lambda: import_module("gcontacts.contacts_tools"),
     }
 
     tool_icons = {
@@ -191,6 +192,7 @@ def main():
         "sheets": "📊",
         "forms": "📝",
         "slides": "🎬",
+        "contacts": "👤",
     }
 
     # Determine which tools to import based on arguments

@@ -123,3 +123,11 @@ slides:
     - create_presentation_comment
     - reply_to_presentation_comment
     - resolve_presentation_comment
+
+contacts:
+  core:
+    - list_contacts
+    - search_contacts
+  extended:
+    - get_contact
+  complete: []

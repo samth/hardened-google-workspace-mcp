@@ -64,6 +64,9 @@ TASKS_READONLY_SCOPE = "https://www.googleapis.com/auth/tasks.readonly"
 # Google Custom Search API scope
 CUSTOM_SEARCH_SCOPE = "https://www.googleapis.com/auth/cse"
 
+# Google People API (Contacts) scopes
+CONTACTS_READONLY_SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
+
 # Base OAuth scopes required for user identification
 BASE_SCOPES = [USERINFO_EMAIL_SCOPE, USERINFO_PROFILE_SCOPE, OPENID_SCOPE]
 
@@ -100,6 +103,8 @@ TASKS_SCOPES = [TASKS_SCOPE, TASKS_READONLY_SCOPE]
 
 CUSTOM_SEARCH_SCOPES = [CUSTOM_SEARCH_SCOPE]
 
+CONTACTS_SCOPES = [CONTACTS_READONLY_SCOPE]
+
 # CW-MODIFIED: Only approved services for security
 # Removed: chat, tasks, search to reduce attack surface
 TOOL_SCOPES_MAP = {
@@ -110,6 +115,7 @@ TOOL_SCOPES_MAP = {
     "sheets": SHEETS_SCOPES,
     "forms": FORMS_SCOPES,
     "slides": SLIDES_SCOPES,
+    "contacts": CONTACTS_SCOPES,
 }
 
 
