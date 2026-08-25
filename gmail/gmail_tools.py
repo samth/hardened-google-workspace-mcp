@@ -8,7 +8,9 @@ import json
 import logging
 import asyncio
 import base64
+import re
 import ssl
+from html import unescape as html_unescape
 from html.parser import HTMLParser
 from typing import Annotated, Optional, List, Dict, Literal, Any
 
@@ -323,6 +325,56 @@ def _extract_headers(payload: dict, header_names: List[str]) -> Dict[str, str]:
     return headers
 
 
+_GMAIL_API_ID_RE = re.compile(r"\A[0-9a-f]{16}\Z")
+
+
+def _normalize_message_ids(value: Optional[str], field_name: str) -> Optional[str]:
+    """Normalize an In-Reply-To or References header value.
+
+    Message-IDs have to reach Gmail as literal ``<local@domain>`` tokens. Two
+    mistakes silently break threading for every recipient while still looking
+    correct to whoever wrote the call: HTML-escaping the angle brackets, so the
+    header carries ``&lt;id@host&gt;`` and matches nothing, and omitting the
+    brackets entirely. Both are repaired here rather than trusted to the caller.
+
+    A value that cannot be a Message-ID at all is rejected instead of being
+    written into the message. The usual case is a Gmail API message id such as
+    ``1a0268a80193937d``, which is an entirely different identifier from the
+    RFC 5322 header of the same message.
+    """
+    if value is None:
+        return None
+
+    unescaped = html_unescape(value)
+
+    # Prefer bracketed tokens, which also handles a References chain run
+    # together without separators. Fall back to treating the value as bare ids.
+    tokens = re.findall(r"<([^<>]*)>", unescaped)
+    if not tokens:
+        tokens = re.split(r"[\s,]+", unescaped.strip())
+
+    normalized: List[str] = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        if "@" not in token or any(ch.isspace() for ch in token):
+            hint = ""
+            if _GMAIL_API_ID_RE.match(token):
+                hint = (
+                    " That is a Gmail API message id, not the RFC 5322"
+                    " Message-ID header; get_gmail_messages_content_batch with"
+                    " format='metadata' reports the header."
+                )
+            raise ValueError(
+                f"{field_name} must contain Message-IDs of the form"
+                f" <local@domain>; got {token!r}.{hint}"
+            )
+        normalized.append(f"<{token}>")
+
+    return " ".join(normalized) or None
+
+
 def _prepare_gmail_message(
     subject: str,
     body: str,
@@ -354,6 +406,12 @@ def _prepare_gmail_message(
     Returns:
         Tuple of (raw_message, thread_id) where raw_message is base64 encoded
     """
+    # Repair the threading headers before anything else looks at them: a
+    # caller that HTML-escaped or unbracketed a Message-ID would otherwise
+    # produce a message that threads for nobody.
+    in_reply_to = _normalize_message_ids(in_reply_to, "in_reply_to")
+    references = _normalize_message_ids(references, "references")
+
     # Handle reply subject formatting
     reply_subject = subject
     if in_reply_to and not subject.lower().startswith("re:"):
@@ -1072,9 +1130,13 @@ async def draft_gmail_message(
     ),
     in_reply_to: Optional[str] = Body(
         None, description="Optional Message-ID of the message being replied to."
+        " Angle brackets are added if missing and HTML entities are decoded,"
+        " so <id@host> and &lt;id@host&gt; behave identically; a value that is"
+        " not a Message-ID (such as a Gmail API message id) is rejected."
     ),
     references: Optional[str] = Body(
         None, description="Optional chain of Message-IDs for proper threading."
+        " Normalized the same way as in_reply_to, preserving order."
     ),
     from_email: Optional[str] = Body(
         None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
@@ -1231,9 +1293,13 @@ async def update_gmail_draft(
     ),
     in_reply_to: Optional[str] = Body(
         None, description="Optional Message-ID of the message being replied to."
+        " Angle brackets are added if missing and HTML entities are decoded,"
+        " so <id@host> and &lt;id@host&gt; behave identically; a value that is"
+        " not a Message-ID (such as a Gmail API message id) is rejected."
     ),
     references: Optional[str] = Body(
         None, description="Optional chain of Message-IDs for proper threading."
+        " Normalized the same way as in_reply_to, preserving order."
     ),
     from_email: Optional[str] = Body(
         None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
