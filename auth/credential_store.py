@@ -405,9 +405,16 @@ class FallbackCredentialStore(CredentialStore):
     def get_credential(self, user_email: str) -> Optional[Credentials]:
         """Check keyring first (unless known to have fallen back), then local JSON."""
         if user_email not in self._local_fallback_users:
-            creds = self._keyring_store.get_credential(user_email)
-            if creds:
-                return creds
+            try:
+                creds = self._keyring_store.get_credential(user_email)
+                if creds:
+                    return creds
+            except Exception as e:
+                logger.warning(
+                    f"Keyring get_credential failed for {user_email}: {e}. "
+                    f"Falling back to local file storage."
+                )
+                self._local_fallback_users.add(user_email)
 
         return self._local_store.get_credential(user_email)
 
@@ -419,8 +426,14 @@ class FallbackCredentialStore(CredentialStore):
         return keyring_ok and local_ok
 
     def list_users(self) -> List[str]:
-        """Merge users from both stores."""
-        keyring_users = set(self._keyring_store.list_users())
+        """Merge users from both stores; tolerate keyring failure (e.g. locked collection)."""
+        try:
+            keyring_users = set(self._keyring_store.list_users())
+        except Exception as e:
+            logger.warning(
+                f"Keyring list_users failed: {e}. Using local storage only."
+            )
+            keyring_users = set()
         local_users = set(self._local_store.list_users())
         all_users = keyring_users | local_users
         return sorted(all_users)
