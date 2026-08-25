@@ -13,6 +13,11 @@ from html.parser import HTMLParser
 from typing import Annotated, Optional, List, Dict, Literal, Any
 
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import mimetypes
+import os
 
 from fastapi import Body
 from pydantic import BeforeValidator, Field
@@ -329,6 +334,7 @@ def _prepare_gmail_message(
     references: Optional[str] = None,
     body_format: Literal["plain", "html"] = "plain",
     from_email: Optional[str] = None,
+    attachments: Optional[List[str]] = None,
 ) -> tuple[str, Optional[str]]:
     """
     Prepare a Gmail message with threading support.
@@ -358,7 +364,38 @@ def _prepare_gmail_message(
     if normalized_format not in {"plain", "html"}:
         raise ValueError("body_format must be either 'plain' or 'html'.")
 
-    message = MIMEText(body, normalized_format)
+    # Build a multipart message when attachments are present; otherwise a simple
+    # text message (backward compatible). Attachments are local file paths.
+    if attachments:
+        _MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024  # Gmail's ~25MB limit
+        total_bytes = 0
+        message = MIMEMultipart()
+        message.attach(MIMEText(body, normalized_format))
+        for path in attachments:
+            if not isinstance(path, str) or not os.path.isfile(path):
+                raise ValueError(f"Attachment file not found: {path}")
+            total_bytes += os.path.getsize(path)
+            if total_bytes > _MAX_TOTAL_ATTACHMENT_BYTES:
+                raise ValueError(
+                    "Total attachment size exceeds 25MB; upload large files to Drive "
+                    "and link them in the body instead."
+                )
+            ctype, encoding = mimetypes.guess_type(path)
+            if ctype is None or encoding is not None:
+                ctype = "application/octet-stream"
+            maintype, subtype = ctype.split("/", 1)
+            with open(path, "rb") as fp:
+                part = MIMEBase(maintype, subtype)
+                part.set_payload(fp.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=os.path.basename(path),
+            )
+            message.attach(part)
+    else:
+        message = MIMEText(body, normalized_format)
     message["Subject"] = reply_subject
 
     # Add sender if provided
@@ -1042,6 +1079,9 @@ async def draft_gmail_message(
     from_email: Optional[str] = Body(
         None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
     ),
+    attachments: Optional[List[str]] = Body(
+        None, description="Optional list of local file paths to attach (combined size up to ~25MB)."
+    ),
 ) -> str:
     """
     Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts.
@@ -1122,6 +1162,7 @@ async def draft_gmail_message(
         in_reply_to=in_reply_to,
         references=references,
         from_email=from_email or user_google_email,
+        attachments=attachments,
     )
 
     # Create a draft instead of sending
@@ -1197,6 +1238,9 @@ async def update_gmail_draft(
     from_email: Optional[str] = Body(
         None, description="Optional sender email address (e.g. a send-as alias). Defaults to user_google_email."
     ),
+    attachments: Optional[List[str]] = Body(
+        None, description="Optional list of local file paths to attach (combined size up to ~25MB)."
+    ),
 ) -> str:
     """
     Updates an existing draft in the user's Gmail account, replacing its content.
@@ -1233,6 +1277,7 @@ async def update_gmail_draft(
         in_reply_to=in_reply_to,
         references=references,
         from_email=from_email or user_google_email,
+        attachments=attachments,
     )
 
     draft_body = {"message": {"raw": raw_message}}
