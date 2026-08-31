@@ -99,6 +99,66 @@ def _parse_reminders_json(
     return validated_reminders
 
 
+def _normalize_recurrence(
+    recurrence: Optional[Union[str, List[str]]],
+    function_name: str,
+) -> Optional[List[str]]:
+    """
+    Normalize a recurrence argument into the list-of-strings the Calendar API expects.
+
+    Accepts a single RFC5545 line, a list of lines, or a newline/comma-separated string.
+    A line is kept verbatim once its property name matches one the API accepts (matched
+    case-insensitively); anything else is dropped with a warning rather than failing the
+    whole call.
+
+    Args:
+        recurrence: Provided recurrence value.
+        function_name: Name of the calling function for logging context.
+
+    Returns:
+        List of validated recurrence lines, or None if there is nothing to set.
+    """
+    if recurrence is None:
+        return None
+
+    if isinstance(recurrence, str):
+        raw_lines = re.split(
+            r"[\n,]+(?=\s*(?:RRULE|EXDATE|RDATE|EXRULE)[:;=])", recurrence
+        )
+        if len(raw_lines) == 1:
+            raw_lines = recurrence.splitlines()
+    else:
+        raw_lines = list(recurrence)
+
+    valid_prefixes = ("RRULE:", "EXDATE;", "EXDATE:", "RDATE;", "RDATE:", "EXRULE:")
+    normalized: List[str] = []
+    for line in raw_lines:
+        if not isinstance(line, str):
+            logger.warning(
+                f"[{function_name}] Ignoring non-string recurrence entry: {line!r}"
+            )
+            continue
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        if not cleaned.upper().startswith(valid_prefixes):
+            logger.warning(
+                f"[{function_name}] Ignoring recurrence line without a "
+                f"RRULE/EXDATE/RDATE/EXRULE prefix: {cleaned!r}"
+            )
+            continue
+        normalized.append(cleaned)
+
+    if not normalized:
+        logger.warning(
+            f"[{function_name}] No valid recurrence lines found in {recurrence!r}, skipping"
+        )
+        return None
+
+    logger.info(f"[{function_name}] Set recurrence to {normalized}")
+    return normalized
+
+
 def _apply_transparency_if_valid(
     event_body: Dict[str, Any],
     transparency: Optional[str],
@@ -560,6 +620,7 @@ async def create_event(
     use_default_reminders: bool = True,
     transparency: Optional[str] = None,
     visibility: Optional[str] = None,
+    recurrence: Optional[Union[str, List[str]]] = None,
 ) -> str:
     """
     Creates a new event.
@@ -573,6 +634,10 @@ async def create_event(
         description (Optional[str]): Event description.
         location (Optional[str]): Event location.
         timezone (Optional[str]): Timezone (e.g., "America/New_York").
+        recurrence (Optional[Union[str, List[str]]]): RFC5545 recurrence lines applied to the
+            event, e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20261211T045959Z". Accepts a single
+            string or a list of strings; EXDATE and RDATE lines are allowed alongside RRULE.
+            start_time/end_time define the first instance.
         attachments (Optional[List[str]]): List of Google Drive file URLs or IDs to attach to the event.
         add_google_meet (bool): Whether to add a Google Meet video conference to the event. Defaults to False.
         reminders (Optional[Union[str, List[Dict[str, Any]]]]): JSON string or list of reminder objects. Each should have 'method' ("popup" or "email") and 'minutes' (0-40320). Max 5 reminders. Example: '[{"method": "popup", "minutes": 15}]' or [{"method": "popup", "minutes": 15}]
@@ -609,6 +674,11 @@ async def create_event(
             event_body["start"]["timeZone"] = timezone
         if "dateTime" in event_body["end"]:
             event_body["end"]["timeZone"] = timezone
+
+    # Handle recurrence (RFC5545 RRULE/EXDATE/RDATE lines)
+    recurrence_lines = _normalize_recurrence(recurrence, "create_event")
+    if recurrence_lines:
+        event_body["recurrence"] = recurrence_lines
 
     # Handle reminders
     if reminders is not None or not use_default_reminders:
@@ -775,6 +845,7 @@ async def modify_event(
     transparency: Optional[str] = None,
     visibility: Optional[str] = None,
     color_id: Optional[str] = None,
+    recurrence: Optional[Union[str, List[str]]] = None,
 ) -> str:
     """
     Modifies an existing event.
@@ -795,6 +866,11 @@ async def modify_event(
         transparency (Optional[str]): Event transparency for busy/free status. "opaque" shows as Busy, "transparent" shows as Available/Free. If None, preserves existing transparency setting.
         visibility (Optional[str]): Event visibility. "default" uses calendar default, "public" is visible to all, "private" is visible only to attendees, "confidential" is same as private (legacy). If None, preserves existing visibility setting.
         color_id (Optional[str]): Event color ID (1-11). If None, preserves existing color.
+        recurrence (Optional[Union[str, List[str]]]): RFC5545 recurrence lines, e.g.
+            "RRULE:FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20261211T045959Z". Accepts a single string or a
+            list. If None, any existing recurrence on the event is preserved -- this update sends
+            a full event body, so an unspecified recurrence would otherwise be dropped and the
+            series collapsed into a single event.
 
     Returns:
         str: Confirmation message of the successful event modification with event link.
@@ -878,6 +954,13 @@ async def modify_event(
     # Handle visibility validation
     _apply_visibility_if_valid(event_body, visibility, "modify_event")
 
+    # Handle recurrence (RFC5545 RRULE/EXDATE/RDATE lines). When not supplied, the
+    # existing recurrence is copied from the fetched event below so that this
+    # full-body update does not silently collapse a recurring series.
+    recurrence_lines = _normalize_recurrence(recurrence, "modify_event")
+    if recurrence_lines:
+        event_body["recurrence"] = recurrence_lines
+
     if timezone is not None and "start" not in event_body and "end" not in event_body:
         # If timezone is provided but start/end times are not, we need to fetch the existing event
         # to apply the timezone correctly. This is a simplification; a full implementation
@@ -908,7 +991,9 @@ async def modify_event(
             "[modify_event] Successfully retrieved existing event before update"
         )
 
-        # Preserve existing fields if not provided in the update
+        # Preserve existing fields if not provided in the update. This request sends a
+        # full event body via events().update(), so anything not carried over here is
+        # erased -- including the start/end times and the recurrence rule of a series.
         _preserve_existing_fields(
             event_body,
             existing_event,
@@ -917,6 +1002,9 @@ async def modify_event(
                 "description": description,
                 "location": location,
                 "colorId": event_body.get("colorId"),
+                "recurrence": event_body.get("recurrence"),
+                "start": event_body.get("start"),
+                "end": event_body.get("end"),
             },
         )
 
